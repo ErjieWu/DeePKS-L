@@ -23,6 +23,7 @@ from deepks.physics.backends.abacus.input_generator import (
     make_abacus_scf_stru,
 )
 from deepks.physics.backends.abacus.parser import parse_abacus_output
+from deepks.physics.gradient_labels import hr_contribution, hr_projection_from_dot, solve_normal_equation
 
 
 def coord_to_atom(path):
@@ -310,6 +311,36 @@ def _build_parser_fields(dump_fields, cal_force, cal_stress, deepks_bandgap, dee
     return parser_fields
 
 
+def _compute_g_label(frame_dir, dot_ph_target):
+    """Compute the HR contribution to the descriptor-gradient label.
+
+    dot_ph_target: (natom*inl_per_atom, nm_max, nm_max), the dot_ph from a target-
+      functional ABACUS run with deepks_grad=True, loaded by the caller from
+      sys_path/dot_phialpha_hamilt.npy.
+    dot_ph[H_current] is read from OUT.ABACUS/deepks_dot_phialpha_hamilt.npy (H_SCF).
+    dot_ph[V_delta] = dot_ph_target - dot_ph_current.
+    If deepks_vdrpre_square.npy is present, solve
+      (B_current^T B_current) g = B_current^T V_delta.
+    Otherwise return the historical projected quantity for backward compatibility.
+    Returns g_label of shape (natom, nalpha), or None if required files absent.
+    """
+    out_dir = os.path.join(frame_dir, 'OUT.ABACUS')
+    required = [
+        'deepks_gevdm.npy',
+        'deepks_dot_phialpha_hamilt.npy',
+    ]
+    if not all(os.path.exists(os.path.join(out_dir, fn)) for fn in required):
+        return None
+
+    gevdm      = np.load(os.path.join(out_dir, 'deepks_gevdm.npy'))
+    dot_ph_cur = np.load(os.path.join(out_dir, 'deepks_dot_phialpha_hamilt.npy'))
+    square_path = os.path.join(out_dir, 'deepks_vdrpre_square.npy')
+    if os.path.exists(square_path):
+        contribution = hr_contribution(np.load(square_path), gevdm, dot_ph_target, dot_ph_cur)
+        return solve_normal_equation({"hr": contribution}, ridge=1e-8)
+    return hr_projection_from_dot(gevdm, dot_ph_target - dot_ph_cur)
+
+
 def _initialize_result_buffers(nframes, natoms):
     return {
         "conv": np.full((nframes, 1), False),
@@ -322,6 +353,7 @@ def _initialize_result_buffers(nframes, natoms):
         "dm_eig": None,
         "bandgap": None,
         "v_delta_precondition": None,
+        "g_label": None,
         "natoms": natoms,
         "nframes": nframes,
     }
@@ -351,6 +383,14 @@ def _collect_system_frames(sys_path, dump_fields, parser_fields, natoms):
     )
     buffers = _initialize_result_buffers(len(frame_dirs), natoms)
 
+    # Load system-level target dot_ph (provided by user from target-functional ABACUS runs).
+    # Shape: (nframes, natom*inl_per_atom, nm_max, nm_max). File: sys_path/dot_phialpha_hamilt.npy
+    dot_ph_target_all = None
+    if "g_label" in dump_fields:
+        _dph_path = os.path.join(sys_path, 'dot_phialpha_hamilt.npy')
+        if os.path.exists(_dph_path):
+            dot_ph_target_all = np.load(_dph_path)
+
     for frame_index, frame_dir in enumerate(frame_dirs):
         parsed = parse_abacus_output(frame_dir, fields=list(parser_fields), natoms=natoms)
         buffers["conv"][frame_index] = parsed.get("convergence", False)
@@ -367,11 +407,15 @@ def _collect_system_frames(sys_path, dump_fields, parser_fields, natoms):
         v_delta = parsed.get("v_delta")
         if v_delta is not None:
             _store_tensor_field(buffers, "v_delta_precondition", frame_index, v_delta, (natoms,))
+        if "g_label" in dump_fields and dot_ph_target_all is not None:
+            g_label = _compute_g_label(frame_dir, dot_ph_target_all[frame_index])
+            if g_label is not None:
+                _store_tensor_field(buffers, "g_label", frame_index, g_label, g_label.shape)
 
     save_results = {"conv": buffers["conv"]}
     for key in (
         "e_tot", "e_base", "f_tot", "f_base", "s_tot", "s_base",
-        "dm_eig", "bandgap", "v_delta_precondition",
+        "dm_eig", "bandgap", "v_delta_precondition", "g_label",
     ):
         if buffers[key] is not None and key in dump_fields:
             save_results[key] = buffers[key]

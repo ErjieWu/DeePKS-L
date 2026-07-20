@@ -181,6 +181,11 @@ def make_abacus_scf_input(fp_params: Dict[str, Any]) -> str:
             "'deepks_v_delta' should be either -2/-1/0/1/2."
         ret += "deepks_v_delta %d\n" % fp_params["deepks_v_delta"]
 
+    if "deepks_grad" in fp_params:
+        assert fp_params["deepks_grad"] in [0, 1], \
+            "'deepks_grad' should be either 0 or 1."
+        ret += "deepks_grad %d\n" % fp_params["deepks_grad"]
+
     if "model_file" in fp_params:
         ret += "deepks_model %s\n" % fp_params["model_file"]
 

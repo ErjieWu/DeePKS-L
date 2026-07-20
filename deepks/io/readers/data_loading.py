@@ -86,6 +86,9 @@ def build_reader_tensor_data(
     gldv_path,
     iR_mat_path=None,
     phialpha_r_path=None,
+    g_label_path=None,
+    g_label_metric_path=None,
+    g_label_projection_path=None,
     hamiltonian_level_names=None,
     hamiltonian_name=None,
     csr_hr_name=None,
@@ -160,6 +163,20 @@ def build_reader_tensor_data(
             np.load(gveg_path).reshape(raw_nframes, natm, ndesc, -1)[conv]
         )
         extra["neg"] = t_data["eg0"].shape[-1]
+
+    if g_label_path is not None:
+        _g_raw = np.load(g_label_path)
+        t_data["lb_g"] = torch.tensor(_g_raw.reshape(raw_nframes, *_g_raw.shape[1:])[conv])
+    if g_label_metric_path is not None:
+        _g_metric_raw = np.load(g_label_metric_path)
+        t_data["g_label_metric"] = torch.tensor(
+            _g_metric_raw.reshape(raw_nframes, *_g_metric_raw.shape[1:])[conv]
+        )
+    if g_label_projection_path is not None:
+        _g_projection_raw = np.load(g_label_projection_path)
+        t_data["g_label_projection"] = torch.tensor(
+            _g_projection_raw.reshape(raw_nframes, *_g_projection_raw.shape[1:])[conv]
+        )
 
     if gldv_path is not None:
         t_data["gldv"] = torch.tensor(

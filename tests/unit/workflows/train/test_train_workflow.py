@@ -274,6 +274,7 @@ def test_prepare_train_data_accepts_new_interface_blocks(monkeypatch):
             "train": {
                 "epochs": 12,
                 "optimizer": {"lr": 5e-4},
+                "trainable_patterns": ["densenet.layers.3.*"],
             },
         },
         "physics": {
@@ -296,3 +297,36 @@ def test_prepare_train_data_accepts_new_interface_blocks(monkeypatch):
     assert model_config["objective_args"]["energy_factor"] == 1.0
     assert model_config["train_args"]["n_epoch"] == 12
     assert model_config["train_args"]["start_lr"] == 5e-4
+    assert model_config["train_args"]["trainable_patterns"] == ["densenet.layers.3.*"]
+
+
+def test_trainer_trainable_patterns_select_only_matching_parameters():
+    from deepks.ml.models.corrnet import CorrNet
+    from deepks.ml.train.trainer import Trainer
+
+    model = CorrNet(input_dim=6, hidden_sizes=[8, 8]).double()
+    selected = Trainer._configure_trainable_parameters(
+        model, ["densenet.layers.2.*"]
+    )
+
+    selected_ids = {id(parameter) for parameter in selected}
+    enabled_names = {
+        name for name, parameter in model.named_parameters() if parameter.requires_grad
+    }
+    assert enabled_names == {
+        "densenet.layers.2.weight",
+        "densenet.layers.2.bias",
+    }
+    assert selected_ids == {
+        id(model.densenet.layers[2].weight),
+        id(model.densenet.layers[2].bias),
+    }
+
+
+def test_trainer_trainable_patterns_reject_unmatched_pattern():
+    from deepks.ml.models.corrnet import CorrNet
+    from deepks.ml.train.trainer import Trainer
+
+    model = CorrNet(input_dim=6, hidden_sizes=[8]).double()
+    with pytest.raises(ValueError, match="matched no model parameters"):
+        Trainer._configure_trainable_parameters(model, ["missing.*"])

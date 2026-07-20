@@ -319,6 +319,7 @@ DEFAULT_CONFIG = {
                 "cal_stress": 0,                                    # Compute stress flag.
                 "deepks_bandgap": 0,                                # DeePKS bandgap output flag.
                 "deepks_v_delta": 0,                                # DeePKS v_delta output flag.
+                "deepks_grad": 0,                                    # DeePKS grad output flag.
                 "deepks_out_labels": 1,                             # DeePKS label output flag.
                 "deepks_scf": 0,                                    # DeePKS in-SCF switch.
                 "out_wfc_lcao": 0,                                  # Output LCAO wfc flag.
@@ -367,7 +368,10 @@ DEFAULT_CONFIG = {
         "objective": {
             "losses": [],                                           # Structured loss definitions.
             "energy_per_atom": None,                                # Energy-per-atom option.
-            "grad_penalty": None,                                   # Gradient penalty setting.
+            "force_grad_penalty": None,                             # Force-gradient penalty (requires grad_veg/eg0 data).
+            "hessian_penalty": None,                                  # Network Hessian curvature penalty weight.
+            "hessian_penalty_method": None,                           # "exact" (default) or "hutchinson".
+            "hessian_n_probes": None,                                 # Hutchinson probe count (default 1).
             "vd_divide_by_nlocal": False,                           # Normalize vd by nlocal.
             "vd_masked_loss": 0,                                    # Masked vd loss mode.
             "vd_masked_S_threshold": 1e-6,                          # S threshold for masked vd loss.
@@ -385,6 +389,7 @@ DEFAULT_CONFIG = {
             "display_detail_test": 0,                               # Detail level for test output.
             "display_natom_loss": False,                            # Print natom-wise loss.
             "fix_embedding": False,                                 # Freeze embedding layers.
+            "trainable_patterns": None,                             # Optional shell patterns selecting trainable parameters.
             "stage_schedule": [],                                   # In-run staged training schedule.
             "optimizer": {
                 "lr": 0.01,                                         # Initial learning rate.
@@ -469,6 +474,7 @@ def get_default_backend_input(backend_name):
                 "cal_stress",
                 "deepks_bandgap",
                 "deepks_v_delta",
+                "deepks_grad",
                 "deepks_out_labels",
                 "deepks_scf",
                 "out_wfc_lcao",

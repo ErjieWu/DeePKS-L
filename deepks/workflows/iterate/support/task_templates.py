@@ -215,12 +215,13 @@ def make_train_task(*, workdir=".", arg_file="train_input.yaml", task_config=Non
                     share_folder="share", outlog="log.train", dispatcher=None, resources=None,
                     dpdispatcher_machine=None, dpdispatcher_resources=None, python="python", **task_args):
     link_prev = task_args.pop("link_prev_files", [])
+    copy_prev = task_args.pop("copy_prev_files", [])
     link_share = task_args.pop("link_share_files", [])
     forward_files = task_args.pop("forward_files", [])
     backward_files = task_args.pop("backward_files", [])
 
     if restart_model and source_model is not None:
-        link_prev.append((source_model, restart_model))
+        copy_prev.append((source_model, restart_model))
         forward_files.append(restart_model)
     if proj_basis and source_pbasis is not None:
         link_share.append((source_pbasis, proj_basis))
@@ -270,6 +271,7 @@ def make_train_task(*, workdir=".", arg_file="train_input.yaml", task_config=Non
         share_folder=share_folder,
         link_share_files=link_share,
         link_prev_files=link_prev,
+        copy_prev_files=copy_prev,
         forward_files=forward_files,
         backward_files=backward_files,
         write_files={arg_file: build_task_yaml(task_config, "train", overrides)},

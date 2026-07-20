@@ -81,9 +81,9 @@ class EnergyTerm(_BaseTerm):
         )
 
 
-class GradPenaltyTerm(_BaseTerm):
+class ForceGradPenaltyTerm(_BaseTerm):
     def __init__(self, factor):
-        super().__init__("grad")
+        super().__init__("force_grad")
         self.factor = factor
 
     def required_prediction_keys(self):
@@ -334,7 +334,8 @@ class VDeltaRTerm(_BaseTerm):
         return ("vdr",)
 
     def compute_loss(self, predictions, targets, batch):
-        return self.factor * self.lossfn(predictions["vdr"], targets["vdr"] * 0.5)
+        # ABACUS DeePKS labels and model energies share the Hartree convention.
+        return self.factor * self.lossfn(predictions["vdr"], targets["vdr"])
 
 
 class DensityRegularizerTerm(_BaseTerm):
@@ -347,6 +348,104 @@ class DensityRegularizerTerm(_BaseTerm):
 
     def compute_loss(self, predictions, targets, batch):
         return self.factor * torch.abs(predictions["density_regularizer"])
+
+
+class GradTerm(_BaseTerm):
+    """Train descriptor gradients either directly against g* or through M,b."""
+
+    def __init__(self, factor, lossfn=None):
+        super().__init__("g_label")
+        self.factor = factor
+        if lossfn is None:
+            lossfn = {}
+        if not isinstance(lossfn, dict):
+            raise TypeError("g_label loss must be a mapping with type: direct or type: quadratic")
+        unknown = set(lossfn).difference({"type"})
+        if unknown:
+            raise ValueError("Unsupported g_label loss parameter(s): " + ", ".join(sorted(unknown)))
+        self.loss_type = str(lossfn.get("type", "direct")).strip().lower()
+        if self.loss_type not in {"direct", "quadratic"}:
+            raise ValueError("g_label loss type must be 'direct' or 'quadratic'")
+
+    def required_prediction_keys(self):
+        return ("input_grad",)
+
+    def required_target_keys(self):
+        return () if self.loss_type == "quadratic" else ("g_label",)
+
+    @staticmethod
+    def _prediction_flat(predictions, width):
+        pred = predictions["input_grad"]
+        pred_flat = pred.reshape(pred.shape[0], -1) if pred.ndim > 1 else pred.reshape(1, -1)
+        if pred_flat.shape[1] != width:
+            raise ValueError(
+                f"gradient-label width {width} is incompatible with descriptor-gradient width "
+                f"{pred_flat.shape[1]}"
+            )
+        return pred_flat
+
+    def compute_loss(self, predictions, targets, batch):
+        if self.loss_type == "direct":
+            target = targets["g_label"]
+            target_flat = target.reshape(target.shape[0], -1) if target.ndim > 1 else target.reshape(1, -1)
+            pred_flat = self._prediction_flat(predictions, target_flat.shape[1])
+            if target_flat.shape != pred_flat.shape:
+                raise ValueError(
+                    f"g_label shape {tuple(target.shape)} is incompatible with input_grad shape "
+                    f"{tuple(predictions['input_grad'].shape)}"
+                )
+            return self.factor * torch.abs(pred_flat - target_flat).pow(2).mean()
+
+        if "g_label_metric" not in batch.context:
+            raise KeyError("g_label quadratic loss requires g_label_metric.npy in the dataset")
+
+        pred = predictions["input_grad"]
+        metric = batch.context["g_label_metric"].to(device=pred.device, dtype=pred.real.dtype)
+        if metric.ndim == 2:
+            metric = metric.unsqueeze(0)
+        pred_flat = self._prediction_flat(predictions, metric.shape[-1])
+        if metric.shape[0] == 1 and pred_flat.shape[0] != 1:
+            metric = metric.expand(pred_flat.shape[0], -1, -1)
+        if metric.shape[0] != pred_flat.shape[0] or metric.shape[1:] != (pred_flat.shape[1], pred_flat.shape[1]):
+            raise ValueError(
+                f"g_label_metric shape {tuple(metric.shape)} is incompatible with input_grad shape {tuple(pred.shape)}"
+            )
+
+        if "g_label_projection" not in batch.context:
+            raise KeyError("g_label quadratic loss requires g_label_projection.npy in the dataset")
+        projection = batch.context["g_label_projection"].to(device=pred.device, dtype=pred.real.dtype)
+        projection_flat = (
+            projection.reshape(projection.shape[0], -1)
+            if projection.ndim > 1
+            else projection.reshape(1, -1)
+        )
+        if projection_flat.shape[0] == 1 and pred_flat.shape[0] != 1:
+            projection_flat = projection_flat.expand(pred_flat.shape[0], -1)
+        if projection_flat.shape != pred_flat.shape:
+            raise ValueError(
+                f"g_label_projection shape {tuple(projection.shape)} is incompatible with "
+                f"input_grad shape {tuple(pred.shape)}"
+            )
+        weighted = torch.einsum("bij,bj->bi", metric, pred_flat)
+        loss_per_frame = (
+            (pred_flat.conj() * weighted).real.sum(dim=1)
+            - 2.0 * (pred_flat.conj() * projection_flat).real.sum(dim=1)
+        )
+        return self.factor * loss_per_frame.mean()
+
+
+class HessianPenaltyTerm(_BaseTerm):
+    """Penalize curvature ||d2E/dlambda2||_F^2 to limit SCF Jacobian perturbation delta_J."""
+
+    def __init__(self, factor):
+        super().__init__("hessian")
+        self.factor = factor
+
+    def required_prediction_keys(self):
+        return ("hessian_penalty",)
+
+    def compute_loss(self, predictions, targets, batch):
+        return self.factor * predictions["hessian_penalty"]
 
 
 def build_descriptor_property_terms(objective_args):
@@ -362,8 +461,8 @@ def build_descriptor_property_terms(objective_args):
             energy_per_atom,
         )
     ]
-    if args.get("grad_penalty", 0.0) > 0:
-        terms.append(GradPenaltyTerm(args["grad_penalty"]))
+    if args.get("force_grad_penalty", 0.0) > 0:
+        terms.append(ForceGradPenaltyTerm(args["force_grad_penalty"]))
     if args.get("force_factor", 0.0) > 0:
         terms.append(ForceTerm(args["force_factor"], normalize_objective_loss(args.get("force_lossfn"))))
     if args.get("stress_factor", 0.0) > 0:
@@ -420,4 +519,8 @@ def build_descriptor_property_terms(objective_args):
         terms.append(VDeltaRTerm(args["v_delta_r_factor"], normalize_objective_loss(args.get("v_delta_r_lossfn"))))
     if args.get("density_factor", 0.0) > 0:
         terms.append(DensityRegularizerTerm(args["density_factor"]))
+    if args.get("hessian_penalty", 0.0) > 0:
+        terms.append(HessianPenaltyTerm(args["hessian_penalty"]))
+    if args.get("grad_factor", 0.0) > 0:
+        terms.append(GradTerm(args["grad_factor"], args.get("grad_lossfn")))
     return terms

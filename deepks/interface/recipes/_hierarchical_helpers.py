@@ -164,7 +164,10 @@ def build_hierarchical_descriptor_objective_args(
     synthetic = {
         key: deepcopy(objective_cfg[key])
         for key in (
-            "grad_penalty",
+            "force_grad_penalty",
+            "hessian_penalty",
+            "hessian_penalty_method",
+            "hessian_n_probes",
             "energy_per_atom",
             "vd_divide_by_nlocal",
             "vd_masked_loss",

@@ -15,6 +15,7 @@ _TARGET_KEY_MAP = {
     "lb_vdr": "vdr",
     "lb_phi": "phi",
     "lb_band": "band",
+    "lb_g": "g_label",
 }
 
 _DEFAULT_INPUT_FIELD_MAPPING = {

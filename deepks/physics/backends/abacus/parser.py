@@ -10,8 +10,8 @@ File layout (all under OUT.ABACUS/):
     deepks_dm_eig.npy   - descriptor matrix, shape (natoms, ndesc)
     deepks_ftot.npy     - total forces (Hartree/Bohr)
     deepks_fbase.npy    - baseline forces (Hartree/Bohr)
-    deepks_stot.npy     - total stress (Hartree/Bohr^3)
-    deepks_sbase.npy    - baseline stress (Hartree/Bohr^3)
+    deepks_stot.npy     - total strain derivative / virial (Hartree)
+    deepks_sbase.npy    - baseline strain derivative / virial (Hartree)
     deepks_otot.npy     - total bandgap-related (Hartree)
     deepks_obase.npy    - baseline bandgap-related (Hartree)
     deepks_orbpre.npy   - orbital precalculation
@@ -125,12 +125,12 @@ def parse_abacus_base_forces(out_dir: str, natoms: int) -> Optional[np.ndarray]:
 
 
 def parse_abacus_stress(out_dir: str) -> Optional[np.ndarray]:
-    """Read total stress from ``deepks_stot.npy`` (Hartree/Bohr^3)."""
+    """Read ``omega * stress`` from ``deepks_stot.npy`` in Hartree."""
     return _load_npy(out_dir, "deepks_stot.npy")
 
 
 def parse_abacus_base_stress(out_dir: str) -> Optional[np.ndarray]:
-    """Read baseline stress from ``deepks_sbase.npy`` (Hartree/Bohr^3)."""
+    """Read baseline ``omega * stress`` from ``deepks_sbase.npy`` in Hartree."""
     return _load_npy(out_dir, "deepks_sbase.npy")
 
 

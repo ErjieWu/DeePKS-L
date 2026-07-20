@@ -400,6 +400,9 @@ class CorrNet(nn.Module, ModelAdapter):
     @staticmethod
     def load_dict(checkpoint, strict=False):
         init_args = dict(checkpoint["init_args"])
+        # Experimental gradient-label checkpoints may contain the removed
+        # stress-only coordinate. It never participated in the scalar energy.
+        init_args.pop("cell_stress_gradient", None)
         if "layer_sizes" in init_args:
             layers = init_args.pop("layer_sizes")
             init_args["input_dim"] = layers[0]
@@ -407,7 +410,9 @@ class CorrNet(nn.Module, ModelAdapter):
         if init_args.get("input_partition") is not None:
             init_args["input_partition"] = list(init_args["input_partition"])
         model = CorrNet(**init_args)
-        model.load_state_dict(checkpoint["state_dict"], strict=strict)
+        state_dict = dict(checkpoint["state_dict"])
+        state_dict.pop("cell_stress_gradient", None)
+        model.load_state_dict(state_dict, strict=strict)
         return model
 
     @staticmethod

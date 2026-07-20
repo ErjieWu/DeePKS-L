@@ -45,6 +45,9 @@ class Reader(object):
         box_name=DEFAULT_READER_FIELD_NAMES.box_name,
         iR_mat_name=DEFAULT_READER_FIELD_NAMES.iR_mat_name,
         phialpha_r_name=DEFAULT_READER_FIELD_NAMES.phialpha_r_name,
+        g_label_name=DEFAULT_READER_FIELD_NAMES.g_label_name,
+        g_label_metric_name=DEFAULT_READER_FIELD_NAMES.g_label_metric_name,
+        g_label_projection_name=DEFAULT_READER_FIELD_NAMES.g_label_projection_name,
         orb_list=None,
         alpha_list=None,
         hamiltonian_level_names=None,
@@ -80,6 +83,9 @@ class Reader(object):
             box_name=box_name,
             iR_mat_name=iR_mat_name,
             phialpha_r_name=phialpha_r_name,
+            g_label_name=g_label_name,
+            g_label_metric_name=g_label_metric_name,
+            g_label_projection_name=g_label_projection_name,
         )
         for path_name, path in resolve_reader_paths(self.data_path, field_names).items():
             setattr(self, path_name, path)
@@ -159,6 +165,9 @@ class Reader(object):
             gldv_path=self.gldv_path,
             iR_mat_path=self.iR_mat_path,
             phialpha_r_path=self.phialpha_r_path,
+            g_label_path=self.g_label_path,
+            g_label_metric_path=self.g_label_metric_path,
+            g_label_projection_path=self.g_label_projection_path,
             hamiltonian_level_names=self.hamiltonian_level_names,
             hamiltonian_name=self.hamiltonian_name,
             csr_hr_name=self.csr_hr_name,

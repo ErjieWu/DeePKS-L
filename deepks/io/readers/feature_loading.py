@@ -160,22 +160,24 @@ def load_rspace_hamiltonian_fields(
     if resolved_gevdm_path is not None:
         gevdm = np.load(resolved_gevdm_path)
         t_data["gevdm"] = torch.tensor(gevdm[conv])
-        # Fast path: ABACUS already produced the R-space overlap + iR mapping.
-        if iR_mat_path is not None and phialpha_r_path is not None:
-            t_data["iR_mat"] = torch.tensor(np.load(iR_mat_path)[conv])
-            t_data["overlap"] = torch.tensor(np.load(phialpha_r_path)[conv])
-            t_data["data_shape"] = _infer_data_shape_from_gevdm(t_data["gevdm"])
-        elif (
+        # Fast path (read-in from ABACUS output files) -- kept for reference but
+        # not active: old code always recomputes overlap/iR_mat via cal_nb_overlap.
+        # if iR_mat_path is not None and phialpha_r_path is not None:
+        #     t_data["iR_mat"] = torch.tensor(np.load(iR_mat_path)[conv])
+        #     t_data["overlap"] = torch.tensor(np.load(phialpha_r_path)[conv])
+        #     t_data["data_shape"] = _infer_data_shape_from_gevdm(t_data["gevdm"])
+        # elif (
+        #     orb_list is not None
+        #     and alpha_list is not None
+        #     ...
+        # ):
+        if (
             orb_list is not None
             and alpha_list is not None
             and "elems" in atom_info
             and "coords" in atom_info
             and "lattice" in atom_info
         ):
-            # Legacy fallback: recompute overlap / iR_mat from atomic structure.
-            # These helpers live in the physics layer because they depend on
-            # pyabacus radial integrators; we import lazily so io/ stays
-            # importable when pyabacus isn't installed and the fast path is in use.
             from deepks.physics.backends.abacus.integrator import make_integrator
             from deepks.physics.properties._neighbor import cal_nb_overlap
 

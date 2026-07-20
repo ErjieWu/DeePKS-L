@@ -4,7 +4,10 @@ from copy import deepcopy
 
 
 _OBJECTIVE_OPTION_KEYS = (
-    "grad_penalty",
+    "force_grad_penalty",
+    "hessian_penalty",
+    "hessian_penalty_method",
+    "hessian_n_probes",
     "energy_per_atom",
     "vd_divide_by_nlocal",
     "vd_masked_loss",
@@ -28,6 +31,7 @@ _LOSS_NAME_MAP = {
     "density_m": ("density_m_factor", "density_m_lossfn", "density_m_occ"),
     "phi_align": ("phi_align_factor", "phi_align_lossfn", "phi_align_occ"),
     "density": ("density_factor", None, None),
+    "g_label": ("grad_factor", "grad_lossfn", None),
 }
 
 _FACTOR_KEYS = tuple(mapped[0] for mapped in _LOSS_NAME_MAP.values())
@@ -92,7 +96,8 @@ def build_descriptor_property_eval_args(objective_args, *, detailed=False):
             "energy_factor": 1.0,
             "force_factor": 0.0,
             "density_factor": 0.0,
-            "grad_penalty": 0.0,
+            "force_grad_penalty": 0.0,
+            "hessian_penalty": 0.0,
             "energy_per_atom": energy_per_atom,
         }
 

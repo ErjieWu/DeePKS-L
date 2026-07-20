@@ -36,6 +36,9 @@ class ReaderFieldNames:
     # these directly into the batch context for the chain-rule V_delta(R) path.
     iR_mat_name: str = "iR_mat"
     phialpha_r_name: str = "phialpha_r"
+    g_label_name: str = "g_label"
+    g_label_metric_name: str = "g_label_metric"
+    g_label_projection_name: str = "g_label_projection"
 
 
 DEFAULT_READER_FIELD_NAMES = ReaderFieldNames()
@@ -67,6 +70,9 @@ READER_PATH_ATTR_MAP = {
     "box_name": "b_path",
     "iR_mat_name": "iR_mat_path",
     "phialpha_r_name": "phialpha_r_path",
+    "g_label_name": "g_label_path",
+    "g_label_metric_name": "g_label_metric_path",
+    "g_label_projection_name": "g_label_projection_path",
 }
 
 

@@ -186,7 +186,7 @@ def write_input_file(path, **abacus_args):
         f.write(f"deepks_scf {abacus_args.get('deepks_scf', 0)}\n")
         f.write(f"deepks_bandgap {abacus_args.get('deepks_bandgap', 0)}\n")
         f.write(f"deepks_v_delta {abacus_args.get('deepks_v_delta', 0)}\n")
-
+        f.write(f"deepks_grad {abacus_args.get('deepks_grad', 0)}\n")
         # Output settings
         f.write(f"out_wfc_lcao {abacus_args.get('out_wfc_lcao', 0)}\n")
 

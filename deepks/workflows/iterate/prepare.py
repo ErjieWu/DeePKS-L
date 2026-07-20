@@ -18,6 +18,7 @@ from deepks.workflows.iterate.support import (
     resolve_scf_profile_levels,
 )
 from deepks.orchestration.workflow.workflow import Iteration, Sequence
+from deepks.orchestration.workflow.task import PythonTask
 from deepks.workflows.iterate.abacus import make_scf_abacus
 
 
@@ -38,14 +39,16 @@ def _create_scf_step(
     *,
     no_model: bool = False,
     workdir: str = SCF_STEP_DIR,
+    train_dump: str = DATA_TRAIN,
+    test_dump: str = DATA_TEST,
 ):
     if scf_soft.lower() == "abacus":
         abacus_kwargs = build_abacus_iterate_scf_kwargs(scf_config)
         return make_scf_abacus(
             systems_train=systems_train,
             systems_test=systems_test,
-            train_dump=DATA_TRAIN,
-            test_dump=DATA_TEST,
+            train_dump=train_dump,
+            test_dump=test_dump,
             dispatcher=scf_machine.get("dispatcher"),
             resources=scf_machine.get("resources"),
             dpdispatcher_machine=scf_machine.get("dpdispatcher_machine"),
@@ -67,8 +70,8 @@ def _create_scf_step(
         return make_scf(
             systems_train=systems_train,
             systems_test=systems_test,
-            train_dump=DATA_TRAIN,
-            test_dump=DATA_TEST,
+            train_dump=train_dump,
+            test_dump=test_dump,
             no_model=no_model,
             task_config=scf_config,
             workdir=workdir,
@@ -114,6 +117,49 @@ def _create_hierarchical_scf_step(
             )
         )
     return Sequence(level_steps, workdir=SCF_STEP_DIR)
+
+
+
+def _create_profile_scf_step(
+    profile_metas,
+    *,
+    scf_soft: str,
+    base_scf_config: Dict[str, Any],
+    scf_machine: Dict[str, Any],
+    proj_basis: Any,
+    share_folder: str,
+    cleanup: bool,
+    no_model: bool = False,
+):
+    """Per-profile SCF for corrnet-energy (non-hierarchical).
+
+    All profiles run directly in 00.scf/ (workdir="."), writing data to
+    the shared data_train/ and data_test/ there — same flat layout as
+    the old single-orbital code frame. No profile.* subdirs are created.
+    The jr.json conflict between sequential profile runs is resolved in
+    dispatcher.JobRecord.load() which merges unknown task hashes.
+    """
+    profile_steps = []
+    for profile_meta in profile_metas:
+        systems_cfg = profile_meta["systems"]
+        profile_train = systems_cfg.get("train_paths", [])
+        profile_test = systems_cfg.get("test_paths")
+        profile_scf_config = materialize_hierarchical_level_scf_config(base_scf_config, profile_meta)
+        profile_steps.append(
+            _create_scf_step(
+                systems_train=profile_train,
+                systems_test=profile_test,
+                scf_soft=scf_soft,
+                scf_config=profile_scf_config,
+                scf_machine=scf_machine,
+                proj_basis=proj_basis,
+                share_folder=share_folder,
+                cleanup=cleanup,
+                no_model=no_model,
+                workdir=".",
+            )
+        )
+    return Sequence(profile_steps, workdir=SCF_STEP_DIR)
 
 
 def _create_train_step(
@@ -167,9 +213,20 @@ def prepare_iterate(config: Dict[str, Any]) -> Tuple[Sequence, str, str]:
     profile_levels = [] if hierarchical_levels else resolve_scf_profile_levels(iterate_param)
     scf_levels = hierarchical_levels or profile_levels
 
-    if scf_levels:
+    if hierarchical_levels:
         scf_step = _create_hierarchical_scf_step(
-            scf_levels,
+            hierarchical_levels,
+            scf_soft=scf_soft,
+            base_scf_config=scf_task_config,
+            scf_machine=deepcopy(runtime.get("scf", {}).get("execute", {})) if isinstance(runtime.get("scf"), dict) else {},
+            proj_basis=proj_basis,
+            share_folder=share_folder,
+            cleanup=cleanup,
+            no_model=not first_iter_has_model,
+        )
+    elif profile_levels:
+        scf_step = _create_profile_scf_step(
+            profile_levels,
             scf_soft=scf_soft,
             base_scf_config=scf_task_config,
             scf_machine=deepcopy(runtime.get("scf", {}).get("execute", {})) if isinstance(runtime.get("scf"), dict) else {},
@@ -197,7 +254,7 @@ def prepare_iterate(config: Dict[str, Any]) -> Tuple[Sequence, str, str]:
         share_folder=share_folder,
         cleanup=cleanup,
         restart=first_iter_has_model,
-        link_default_data=not scf_levels,
+        link_default_data=not hierarchical_levels,
     )
 
     iteration_workflow = Iteration(
@@ -208,9 +265,20 @@ def prepare_iterate(config: Dict[str, Any]) -> Tuple[Sequence, str, str]:
     )
 
     if use_init:
-        if scf_levels:
+        if hierarchical_levels:
             scf_init = _create_hierarchical_scf_step(
-                scf_levels,
+                hierarchical_levels,
+                scf_soft=scf_soft,
+                base_scf_config=init_scf_config,
+                scf_machine=deepcopy(runtime.get("scf", {}).get("execute", {})) if isinstance(runtime.get("scf"), dict) else {},
+                proj_basis=proj_basis,
+                share_folder=share_folder,
+                cleanup=cleanup,
+                no_model=not snapshot["initial_model_exists"],
+            )
+        elif profile_levels:
+            scf_init = _create_profile_scf_step(
+                profile_levels,
                 scf_soft=scf_soft,
                 base_scf_config=init_scf_config,
                 scf_machine=deepcopy(runtime.get("scf", {}).get("execute", {})) if isinstance(runtime.get("scf"), dict) else {},
@@ -238,7 +306,7 @@ def prepare_iterate(config: Dict[str, Any]) -> Tuple[Sequence, str, str]:
             share_folder=share_folder,
             cleanup=cleanup,
             restart=bool(snapshot["initial_model_exists"]),
-            link_default_data=not scf_levels,
+            link_default_data=not hierarchical_levels,
         )
 
         init_folder = snapshot["share_path"] if snapshot["initial_model_exists"] else None

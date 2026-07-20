@@ -382,6 +382,15 @@ class JobRecord(object):
     def load(self):
         with open(self.fname) as fp:
             self.record = json.load(fp)
+        task_hashes = [_hash_task_chunk(c) for c in self.task_chunks]
+        for ih, chunk in zip(task_hashes, self.task_chunks):
+            if ih not in self.record:
+                self.record[ih] = {
+                    'context': None,
+                    'finished': False,
+                    'fail_count': 0,
+                    'task_chunk': [{"dir": t["dir"], "cmds": t["cmds"]} for t in chunk],
+                }
 
     def _new_record(self):
         task_hashes = [_hash_task_chunk(chunk) for chunk in self.task_chunks]

@@ -25,6 +25,16 @@ from deepks.physics.backends.abacus.input_generator import (
 )
 from deepks.physics.backends.abacus.constants import CMODEL_FILE
 from deepks.physics.backends.abacus.utils import read_csr
+from deepks.physics.gradient_labels import (
+    assemble_projection,
+    assemble_normal_matrix,
+    force_contribution,
+    hr_contribution,
+    filter_solution_by_metric,
+    normalize_gradient_label_config,
+    solve_normal_equation,
+    stress_contribution,
+)
 
 
 def _normalize_hr_target_shape(target_shape):
@@ -232,7 +242,7 @@ def _load_frame(arr_dict, key, frame_idx, nframes, data):
 
 
 def _collect_frames(sys_path, nframes, cal_force, cal_stress,
-                    deepks_bandgap, deepks_v_delta, deepks_scf,
+                    deepks_bandgap, deepks_v_delta, deepks_scf, deepks_grad=0,
                     target_shape=None):
     arrs = dict(
         dm_eig=None,
@@ -249,12 +259,14 @@ def _collect_frames(sys_path, nframes, cal_force, cal_stress,
         # overlap / iR_mat from atomic structure (which would require the user
         # to thread ``orb_list`` / ``alpha_list`` through ``data.loader``).
         iR_mat=None, phialpha_r=None,
+        _out_dirs=[],
     )
     conv = np.full((nframes, 1), False)
     hr_target_shape = _normalize_hr_target_shape(target_shape)
 
     for f in range(nframes):
         load_f_path = f"{sys_path}/ABACUS/{f}/OUT.ABACUS/"
+        arrs['_out_dirs'].append(load_f_path)
         with open(f"{sys_path}/ABACUS/{f}/conv") as conv_file:
             ic = [t.strip('#').upper() for t in conv_file.read().split()]
             if ("CONVERGED" in ic or "ACHIEVED" in ic) and "NOT" not in ic:
@@ -358,10 +370,111 @@ def _collect_frames(sys_path, nframes, cal_force, cal_stress,
     return arrs
 
 
+def _load_optional_npy(path):
+    return np.load(path) if os.path.exists(path) else None
+
+
+def _compute_joint_g_labels(arrs, load_ref_path, nframes, *, force_delta=None, stress_delta=None,
+                            gradient_label=None, return_metric=False, return_projection=False):
+    cfg = normalize_gradient_label_config(gradient_label)
+    weights = cfg["weights"]
+    dot_ph_target_all = _load_optional_npy(os.path.join(load_ref_path, "dot_phialpha_hamilt.npy"))
+    labels = []
+    metrics = []
+    projections = []
+
+    for iframe in range(nframes):
+        out_dir = arrs.get('_out_dirs', [None] * nframes)[iframe]
+        if out_dir is None:
+            labels.append(None)
+            metrics.append(None)
+            projections.append(None)
+            continue
+
+        contributions = {}
+        if weights.get("hr", 0.0) != 0.0 and dot_ph_target_all is not None:
+            square = _load_optional_npy(os.path.join(out_dir, "deepks_vdrpre_square.npy"))
+            gevdm = _load_optional_npy(os.path.join(out_dir, "deepks_gevdm.npy"))
+            dot_ph_current = _load_optional_npy(os.path.join(out_dir, "deepks_dot_phialpha_hamilt.npy"))
+            if square is not None and gevdm is not None and dot_ph_current is not None:
+                contributions["hr"] = hr_contribution(
+                    square,
+                    gevdm,
+                    dot_ph_target_all[iframe],
+                    dot_ph_current,
+                )
+
+        if weights.get("force", 0.0) != 0.0 and force_delta is not None and arrs.get("gvx") is not None:
+            metric = _load_optional_npy(os.path.join(out_dir, "deepks_gradvx_square.npy"))
+            contributions["force"] = force_contribution(arrs["gvx"][iframe], force_delta[iframe], metric=metric)
+
+        if weights.get("stress", 0.0) != 0.0 and stress_delta is not None and arrs.get("gvepsl") is not None:
+            metric = _load_optional_npy(os.path.join(out_dir, "deepks_gvepsl_square.npy"))
+            contributions["stress"] = stress_contribution(
+                arrs["gvepsl"][iframe],
+                stress_delta[iframe],
+                metric=metric,
+            )
+
+        if contributions:
+            label_weights = {name: weights[name] for name in contributions}
+            raw_metric = assemble_normal_matrix(contributions, weights=label_weights)
+            label = solve_normal_equation(
+                contributions,
+                weights=label_weights,
+                ridge=cfg["ridge"],
+                fallback=cfg["fallback"],
+            )
+            eigen_filter = cfg["eigen_filter"]
+            if eigen_filter is not None:
+                label = filter_solution_by_metric(
+                    label,
+                    raw_metric,
+                    rcond=eigen_filter.get("rcond", 0.0),
+                    min_eig=eigen_filter.get("min_eig", 0.0),
+                )
+            labels.append(label)
+            metrics.append(raw_metric)
+            projections.append(assemble_projection(contributions, weights=label_weights))
+        else:
+            labels.append(None)
+            metrics.append(None)
+            projections.append(None)
+
+    if not any(label is not None for label in labels):
+        if return_metric and return_projection:
+            return None, None, None
+        if return_metric:
+            return None, None
+        if return_projection:
+            return None, None
+        return None
+    first = next(label for label in labels if label is not None)
+    result = np.zeros((nframes,) + first.shape, dtype=np.float64)
+    first_metric = next(metric for metric in metrics if metric is not None)
+    metric_result = np.zeros((nframes,) + first_metric.shape, dtype=np.float64)
+    first_projection = next(projection for projection in projections if projection is not None)
+    projection_result = np.zeros((nframes,) + first_projection.shape, dtype=np.float64)
+    for iframe, label in enumerate(labels):
+        if label is not None:
+            result[iframe] = label
+        if metrics[iframe] is not None:
+            metric_result[iframe] = metrics[iframe]
+        if projections[iframe] is not None:
+            projection_result[iframe] = projections[iframe]
+    if return_metric and return_projection:
+        return result, metric_result, projection_result
+    if return_metric:
+        return result, metric_result
+    if return_projection:
+        return result, projection_result
+    return result
+
+
 def _save_system_data(save_path, load_ref_path, arrs,
                      nframes, natoms, cal_force, cal_stress,
-                     deepks_bandgap, deepks_v_delta,
-                     target_shape=None):
+                     deepks_bandgap, deepks_v_delta, deepks_grad=0,
+                     target_shape=None, gradient_label=None):
     os.makedirs(save_path, exist_ok=True)
     np.save(save_path + "conv.npy", arrs['conv'])
     np.save(save_path + "dm_eig.npy", arrs['dm_eig'])
@@ -374,24 +487,28 @@ def _save_system_data(save_path, load_ref_path, arrs,
     np.save(save_path + "l_e_delta.npy", e_ref - e_base)
     np.save(save_path + "atom.npy", arrs['atom_data'])
     np.save(save_path + "box.npy", arrs['box_data'])
+    force_delta = None
+    stress_delta = None
     if cal_force:
         f_ref = np.load(load_ref_path + "force.npy")
         if f_ref.shape != (nframes, natoms, 3):
             raise ValueError(f"force.npy shape should be (nframes,natoms,3), got {f_ref.shape}.")
+        force_delta = f_ref - arrs['f_base']
         np.save(save_path + "f_base.npy", arrs['f_base'])
         np.save(save_path + "f_tot.npy", arrs['f_tot'])
         np.save(save_path + "force.npy", f_ref)
-        np.save(save_path + "l_f_delta.npy", f_ref - arrs['f_base'])
+        np.save(save_path + "l_f_delta.npy", force_delta)
         if arrs['gvx'] is not None:
             np.save(save_path + "grad_vx.npy", arrs['gvx'])
     if cal_stress:
         s_ref = coerce_stress(np.load(load_ref_path + "stress.npy"), nframes, 'stress.npy')
         s_base = coerce_stress(arrs['s_base'], nframes, 's_base')
         s_tot = coerce_stress(arrs['s_tot'], nframes, 's_tot')
+        stress_delta = s_ref - s_base
         np.save(save_path + "s_base.npy", s_base)
         np.save(save_path + "s_tot.npy", s_tot)
         np.save(save_path + "stress.npy", s_ref)
-        np.save(save_path + "l_s_delta.npy", s_ref - s_base)
+        np.save(save_path + "l_s_delta.npy", stress_delta)
         if arrs['gvepsl'] is not None:
             np.save(save_path + "grad_epsilon.npy", arrs['gvepsl'])
     if deepks_bandgap:
@@ -421,30 +538,54 @@ def _save_system_data(save_path, load_ref_path, arrs,
             np.save(save_path + "overlap.npy", np.load(load_ref_path + "overlap.npy"))
     if deepks_v_delta < 0:
         hr_target_shape = _normalize_hr_target_shape(target_shape)
-        hr_ref = _align_hr_tensor(
-            np.load(load_ref_path + "hamiltonian_r.npy"),
-            hr_target_shape,
-            name="hamiltonian_r.npy",
-        )
-        if hr_ref.shape[0] != nframes or hr_ref.ndim != 6:
-            raise ValueError(f"hamiltonian_r.npy shape should be (nframes,nR,nR,nR,nlocal,nlocal), got {hr_ref.shape}.")
-        for key in ('hr_base', 'hr_tot'):
-            arr = _align_hr_tensor(arrs[key], hr_target_shape, name=key) if arrs[key] is not None else None
-            if arr is None:
-                continue
-            target_r = tuple(max(arr.shape[axis + 1], hr_ref.shape[axis + 1]) for axis in range(3))
-            arr = _pad_first_three_dims(arr, target_r, start_axis=1)
-            hr_ref = _pad_first_three_dims(hr_ref, target_r, start_axis=1)
-            arrs[key] = arr
+        hr_ref_path = load_ref_path + "hamiltonian_r.npy"
+        hr_ref = None
+        if os.path.exists(hr_ref_path):
+            hr_ref = _align_hr_tensor(
+                np.load(hr_ref_path),
+                hr_target_shape,
+                name="hamiltonian_r.npy",
+            )
+            if hr_ref.shape[0] != nframes or hr_ref.ndim != 6:
+                raise ValueError(
+                    "hamiltonian_r.npy shape should be "
+                    f"(nframes,nR,nR,nR,nlocal,nlocal), got {hr_ref.shape}."
+                )
+            for key in ('hr_base', 'hr_tot'):
+                arr = _align_hr_tensor(arrs[key], hr_target_shape, name=key) if arrs[key] is not None else None
+                if arr is None:
+                    continue
+                target_r = tuple(max(arr.shape[axis + 1], hr_ref.shape[axis + 1]) for axis in range(3))
+                arr = _pad_first_three_dims(arr, target_r, start_axis=1)
+                hr_ref = _pad_first_three_dims(hr_ref, target_r, start_axis=1)
+                arrs[key] = arr
+            np.save(save_path + "hamiltonian_r.npy", hr_ref)
+        elif not deepks_grad:
+            raise FileNotFoundError(
+                f"{hr_ref_path} is required for direct real-space Hamiltonian training"
+            )
+        else:
+            # Gradient-only HR supervision uses the target projected operator
+            # (dot_phialpha_hamilt.npy), not the direct Hamiltonian tensor.
+            for key in ('hr_base', 'hr_tot'):
+                if arrs[key] is not None:
+                    arrs[key] = _align_hr_tensor(arrs[key], hr_target_shape, name=key)
+
         if arrs['vdr_precalc'] is not None:
-            target_r = tuple(hr_ref.shape[axis + 1] for axis in range(3))
-            arrs['vdr_precalc'] = _pad_first_three_dims(arrs['vdr_precalc'], target_r, start_axis=1)
-        np.save(save_path + "hamiltonian_r.npy", hr_ref)
+            if hr_ref is not None:
+                target_r = tuple(hr_ref.shape[axis + 1] for axis in range(3))
+            elif hr_target_shape is not None:
+                target_r = hr_target_shape[:3]
+            else:
+                target_r = None
+            if target_r is not None:
+                arrs['vdr_precalc'] = _pad_first_three_dims(arrs['vdr_precalc'], target_r, start_axis=1)
         if arrs['hr_tot'] is not None:
             np.save(save_path + "hr_tot.npy", arrs['hr_tot'])
         if arrs['hr_base'] is not None:
             np.save(save_path + "hr_base.npy", arrs['hr_base'])
-            np.save(save_path + "l_hr_delta.npy", hr_ref - arrs['hr_base'])
+            if hr_ref is not None:
+                np.save(save_path + "l_hr_delta.npy", hr_ref - arrs['hr_base'])
         if deepks_v_delta == -1 and arrs['vdr_precalc'] is not None:
             np.save(save_path + "vdr_precalc.npy", arrs['vdr_precalc'])
         elif deepks_v_delta == -2 and arrs['gevdm'] is not None:
@@ -453,13 +594,31 @@ def _save_system_data(save_path, load_ref_path, arrs,
                 np.save(save_path + "iR_mat.npy", arrs['iR_mat'])
             if arrs.get('phialpha_r') is not None:
                 np.save(save_path + "phialpha_r.npy", arrs['phialpha_r'])
+    if deepks_grad:
+        g_label, g_label_metric, g_label_projection = _compute_joint_g_labels(
+            arrs,
+            load_ref_path,
+            nframes,
+            force_delta=force_delta,
+            stress_delta=stress_delta,
+            gradient_label=gradient_label,
+            return_metric=True,
+            return_projection=True,
+        )
+        if g_label is not None:
+            np.save(save_path + "g_label.npy", g_label)
+        if g_label_metric is not None:
+            np.save(save_path + "g_label_metric.npy", g_label_metric)
+        if g_label_projection is not None:
+            np.save(save_path + "g_label_projection.npy", g_label_projection)
 
 
 def gather_stats_abacus(systems_train, systems_test,
                         train_dump, test_dump,
                         cal_force=0, cal_stress=0,
                         deepks_bandgap=0, deepks_v_delta=0,
-                        deepks_scf=1, target_shape=None, **stat_args):
+                        deepks_scf=1, deepks_grad=0, target_shape=None,
+                        gradient_label=None, **stat_args):
     """Gather iterate ABACUS stats and print summary."""
     sys_train_paths = [os.path.abspath(s) for s in load_sys_paths(systems_train)]
     sys_test_paths = [os.path.abspath(s) for s in load_sys_paths(systems_test)]
@@ -517,7 +676,9 @@ def gather_stats_abacus(systems_train, systems_test,
                 cal_stress,
                 deepks_bandgap,
                 deepks_v_delta,
+                deepks_grad=deepks_grad,
                 target_shape=target_shape,
+                gradient_label=gradient_label,
             )
 
     _process_systems(sys_train_paths, sys_train_names, train_dump)

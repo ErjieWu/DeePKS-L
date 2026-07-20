@@ -172,6 +172,9 @@ def prepare_train_runtime(config: Dict[str, Any]) -> Tuple[GroupReader, Optional
                     "display_epoch": train_cfg.get("display_epoch"),
                     "display_detail_test": train_cfg.get("display_detail_test"),
                     "display_grouped_loss": train_cfg.get("display_natom_loss"),
+                    "snapshot_epoch": train_cfg.get("snapshot_epoch"),
+                    "snapshot_prefix": train_cfg.get("snapshot_prefix"),
+                    "trainable_patterns": train_cfg.get("trainable_patterns"),
                 }.items()
                 if value is not None
             },
@@ -272,5 +275,3 @@ def run_training_stage(
 
 def _build_stage_group_reader(paths, loader_args):
     return GroupReader(paths, **loader_args)
-
-

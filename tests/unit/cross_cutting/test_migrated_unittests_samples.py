@@ -313,7 +313,7 @@ def test_migrated_evaluator_sample(capsys):
             "density_m_occ": {natom: 6},
             "density_m_lossfn": loss_fn,
             "density_factor": 1.0,
-            "grad_penalty": 1.0,
+            "force_grad_penalty": 1.0,
             "energy_per_atom": 0,
             "vd_divide_by_nlocal": True,
         },
@@ -348,7 +348,7 @@ def test_migrated_evaluator_sample(capsys):
     line = capsys.readouterr().out.strip().split()
     assert line[-10:] == [
         "test_energy",
-        "test_grad",
+        "test_force_grad",
         "test_force",
         "test_stress",
         "test_orbital",

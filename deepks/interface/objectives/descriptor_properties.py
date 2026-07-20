@@ -31,7 +31,11 @@ class DescriptorPropertyObjectiveAdapter(ObjectiveAdapter):
         phi_align_factor=0.0,
         phi_align_occ=0,
         density_factor=0.0,
-        grad_penalty=0.0,
+        force_grad_penalty=0.0,
+        hessian_penalty=0.0,
+        grad_factor=0.0,
+        hessian_penalty_method="exact",
+        hessian_n_probes=1,
         energy_lossfn=None,
         force_lossfn=None,
         stress_lossfn=None,
@@ -43,6 +47,7 @@ class DescriptorPropertyObjectiveAdapter(ObjectiveAdapter):
         band_lossfn=None,
         bandgap_lossfn=None,
         density_m_lossfn=None,
+        grad_lossfn=None,
         energy_per_atom=0,
         vd_divide_by_nlocal=False,
         vd_masked_loss=0,
@@ -98,7 +103,11 @@ class DescriptorPropertyObjectiveAdapter(ObjectiveAdapter):
         self.density_m_factor = density_m_factor
         self.phi_align_factor = phi_align_factor
         self.d_factor = density_factor
-        self.g_penalty = grad_penalty
+        self.fg_penalty = force_grad_penalty
+        self.h_penalty = hessian_penalty
+        self.grad_factor = grad_factor
+        self.hessian_method = hessian_penalty_method
+        self.hessian_n_probes = hessian_n_probes
         self.energy_per_atom = energy_per_atom
         self.vd_divide_by_nlocal = vd_divide_by_nlocal
         self.vd_masked_loss = vd_masked_loss
@@ -137,7 +146,11 @@ class DescriptorPropertyObjectiveAdapter(ObjectiveAdapter):
             "phi_align_factor": phi_align_factor,
             "phi_align_occ": phi_align_occ,
             "density_factor": density_factor,
-            "grad_penalty": grad_penalty,
+            "force_grad_penalty": force_grad_penalty,
+            "hessian_penalty": hessian_penalty,
+            "grad_factor": grad_factor,
+            "hessian_penalty_method": hessian_penalty_method,
+            "hessian_n_probes": hessian_n_probes,
             "energy_lossfn": energy_lossfn,
             "force_lossfn": force_lossfn,
             "stress_lossfn": stress_lossfn,
@@ -149,6 +162,7 @@ class DescriptorPropertyObjectiveAdapter(ObjectiveAdapter):
             "band_lossfn": band_lossfn,
             "bandgap_lossfn": bandgap_lossfn,
             "density_m_lossfn": density_m_lossfn,
+            "grad_lossfn": grad_lossfn,
             "energy_per_atom": self.energy_per_atom,
             "vd_divide_by_nlocal": vd_divide_by_nlocal,
             "vd_masked_loss": vd_masked_loss,
@@ -179,6 +193,18 @@ class DescriptorPropertyObjectiveAdapter(ObjectiveAdapter):
         if dropped:
             self._warn_dropped_properties(dropped)
         derivative_spec = self.property_engine.required_model_derivatives(requested_properties)
+        # Adapter-level uses of input_grad (grad_factor, fg_penalty, h_penalty,
+        # d_factor) bypass the property engine, so they don't appear in
+        # requested_properties and derivative_spec["input"] stays False even
+        # when they are active.  Force it True so model_input.requires_grad_
+        # is set and _compute_input_grad actually runs.
+        _adapter_needs_input_grad = (
+            self.grad_factor > 0 or self.fg_penalty > 0
+            or self.h_penalty > 0 or self.d_factor > 0
+        )
+        if _adapter_needs_input_grad and not derivative_spec.get("input"):
+            derivative_spec = dict(derivative_spec)
+            derivative_spec["input"] = True
 
         # R1 + R2: call the model in dict-in / dict-out form, then apply
         # interface-side reducers to obtain the supervision-ready primary
@@ -203,9 +229,15 @@ class DescriptorPropertyObjectiveAdapter(ObjectiveAdapter):
             model_derivatives=model_derivatives,
             context=calc_context,
         )
-        if self.g_penalty > 0 and input_grad is not None and "eg0" in batch.context:
+        if self.fg_penalty > 0 and input_grad is not None and "eg0" in batch.context:
             eg_base, gveg = batch.context["eg0"], batch.context["gveg"]
             predictions["grad_total"] = torch.einsum("...apg,...ap->...g", gveg, input_grad) + eg_base
+        if self.h_penalty > 0 and input_grad is not None:
+            predictions["hessian_penalty"] = self._compute_hessian_penalty(
+                input_grad, model_input, self.hessian_method, self.hessian_n_probes
+            )
+        if self.grad_factor > 0 and input_grad is not None:
+            predictions["input_grad"] = input_grad
         if self.d_factor > 0 and input_grad is not None and "gldv" in batch.context:
             predictions["density_regularizer"] = (batch.context["gldv"] * input_grad).mean(0).sum()
 
@@ -308,6 +340,60 @@ class DescriptorPropertyObjectiveAdapter(ObjectiveAdapter):
         )
         return grad
 
+    @staticmethod
+    def _compute_hessian_penalty(input_grad, model_input, method, n_probes):
+        """Compute ||d2E/dlambda2||_F^2 for the Hessian curvature penalty.
+
+        Two methods:
+          "exact"       -- row-by-row Jacobian of input_grad; O(ndesc_per_atom) backward
+                           passes. Exploits per-atom independence: iterates over descriptor
+                           dims only (not natom*ndesc). Default.
+          "hutchinson"  -- stochastic Frobenius-norm estimate via n_probes Rademacher
+                           vectors; O(n_probes) backward passes. Cheaper for large systems.
+        """
+        if method == "hutchinson":
+            return DescriptorPropertyObjectiveAdapter._hutchinson_hessian(
+                input_grad, model_input, n_probes
+            )
+        return DescriptorPropertyObjectiveAdapter._exact_hessian(input_grad, model_input)
+
+    @staticmethod
+    def _exact_hessian(input_grad, model_input):
+        # input_grad: (batch, natom, ndesc_per_atom)  -- already create_graph=True
+        # Exploit per-atom independence: iterate over ndesc_per_atom only.
+        ndesc = input_grad.shape[-1]
+        frob_sq = input_grad.new_tensor(0.0)
+        for d in range(ndesc):
+            row = torch.autograd.grad(
+                input_grad[..., d].sum(),   # scalar -- sum over batch and atoms
+                model_input,
+                retain_graph=(d < ndesc - 1),
+                create_graph=False,
+                only_inputs=True,
+            )[0]  # (batch, natom, ndesc_per_atom) -- d-th Hessian row per atom
+            frob_sq = frob_sq + row.pow(2).mean()  # mean over batch*atoms, sum over row
+        # Both methods compute ||H||_F^2 / (batch*natom*ndesc_per_atom).
+        return frob_sq
+
+    @staticmethod
+    def _hutchinson_hessian(input_grad, model_input, n_probes):
+        # Unbiased estimator: E[||Hv||^2] = ||H||_F^2 for Rademacher v.
+        penalty = input_grad.new_tensor(0.0)
+        for _ in range(n_probes):
+            # Rademacher vector (+-1 with equal probability)
+            v = torch.randint(0, 2, input_grad.shape, dtype=input_grad.dtype,
+                              device=input_grad.device) * 2 - 1
+            Hv = torch.autograd.grad(
+                (input_grad * v).sum(),
+                model_input,
+                retain_graph=True,
+                create_graph=False,
+                only_inputs=True,
+            )[0]
+            penalty = penalty + Hv.pow(2).mean()
+        return penalty / n_probes
+
+
     def _requested_properties(self):
         requested = set()
         if self.primary_property:
@@ -338,8 +424,10 @@ class DescriptorPropertyObjectiveAdapter(ObjectiveAdapter):
     def print_head(self, name, data_keys, align_len=20):
         data_keys = self._normalize_field_keys(data_keys)
         info = f"{name}_energy".rjust(align_len)
-        if self.g_penalty > 0 and "eg0" in data_keys:
-            info += f"{name}_grad".rjust(align_len)
+        if self.fg_penalty > 0 and "eg0" in data_keys:
+            info += f"{name}_force_grad".rjust(align_len)
+        if self.h_penalty > 0:
+            info += f"{name}_hessian".rjust(align_len)
         if self.f_factor > 0 and "force" in data_keys:
             info += f"{name}_force".rjust(align_len)
         if self.s_factor > 0 and "stress" in data_keys:
@@ -362,6 +450,12 @@ class DescriptorPropertyObjectiveAdapter(ObjectiveAdapter):
             info += f"{name}_phi_align".rjust(align_len)
         if self.d_factor > 0 and "gldv" in data_keys:
             info += f"{name}_density".rjust(align_len)
+        has_gradient_supervision = (
+            "g_label" in data_keys
+            or {"g_label_metric", "g_label_projection"}.issubset(data_keys)
+        )
+        if self.grad_factor > 0 and has_gradient_supervision:
+            info += f"{name}_grad".rjust(align_len)
         print(info, end="")
 
     @staticmethod
@@ -375,6 +469,7 @@ class DescriptorPropertyObjectiveAdapter(ObjectiveAdapter):
             "lb_vd": "v_delta",
             "lb_vdr": "vdr",
             "lb_phi": "phi",
+            "lb_g": "g_label",
             "lb_band": "band",
         }
         return {aliases.get(key, key) for key in data_keys}

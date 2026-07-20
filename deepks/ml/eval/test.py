@@ -78,6 +78,8 @@ def test(model, g_reader, dump_prefix="test", group=False, device="cpu"):
     for i in range(g_reader.nsystems):
         if hasattr(g_reader, "sample_all_task_batch"):
             sample = _batch_to_device(g_reader.sample_all_task_batch(i), device)
+            if "energy" not in sample.targets:
+                continue
             label = sample.targets["energy"]
             data = sample.model_inputs["descriptor"]
         else:
@@ -92,6 +94,8 @@ def test(model, g_reader, dump_prefix="test", group=False, device="cpu"):
                         sample[key] = value.to("cpu", dtype=torch.complex128, non_blocking=True)
                     else:
                         sample[key] = value.to(device, dtype=torch.complex128, non_blocking=True)
+            if "lb_e" not in sample:
+                continue
             label, data = sample["lb_e"], sample["eig"]
         nframes = label.shape[0]
         pred = _reduce_per_atom_energy(model, model(data))
@@ -110,6 +114,10 @@ def test(model, g_reader, dump_prefix="test", group=False, device="cpu"):
             header = f"{g_reader.path_list[i]}\nmean l1 error: {error_l1}\nmean l2 error: {error_np}\nreal_ene  pred_ene"
             filename = f"{dump_prefix}.{i:0{nd}}.out"
             np.savetxt(filename, dump_res, header=header)
+
+    if not label_list:
+        print("no energy targets; skipping energy prediction log")
+        return None, None
 
     all_label = np.concatenate(label_list, axis=0)
     all_pred = np.concatenate(pred_list, axis=0)

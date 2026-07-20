@@ -1,6 +1,7 @@
 """Reusable ML-side trainer."""
 
 import os
+from fnmatch import fnmatchcase
 from time import time
 
 import numpy as np
@@ -50,6 +51,43 @@ class Trainer:
             return
         yield from reader
 
+    @staticmethod
+    def _configure_trainable_parameters(model, trainable_patterns=None):
+        """Select parameters optimized during a continuation stage.
+
+        ``None`` preserves the model's existing ``requires_grad`` flags.
+        Otherwise all parameters are frozen first and only names matching at
+        least one shell-style pattern are enabled. This makes head-only or
+        layer-wise continuation explicit and checkpoint-independent.
+        """
+
+        named_parameters = list(model.named_parameters())
+        if trainable_patterns is None:
+            selected = [(name, value) for name, value in named_parameters if value.requires_grad]
+        else:
+            if isinstance(trainable_patterns, str):
+                trainable_patterns = [trainable_patterns]
+            patterns = [str(pattern) for pattern in trainable_patterns]
+            if not patterns:
+                raise ValueError("trainable_patterns must contain at least one pattern")
+            for _, value in named_parameters:
+                value.requires_grad_(False)
+            selected = []
+            for name, value in named_parameters:
+                if any(fnmatchcase(name, pattern) for pattern in patterns):
+                    value.requires_grad_(True)
+                    selected.append((name, value))
+            if not selected:
+                available = ", ".join(name for name, _ in named_parameters)
+                raise ValueError(
+                    f"trainable_patterns {patterns!r} matched no model parameters; "
+                    f"available names: {available}"
+                )
+            print("# trainable parameters:", ", ".join(name for name, _ in selected))
+        if not selected:
+            raise ValueError("model has no trainable parameters")
+        return [value for _, value in selected]
+
     def train(
         self,
         model,
@@ -66,10 +104,13 @@ class Trainer:
         decay_rate_iter=None,
         weight_decay=0.0,
         fix_embedding=False,
+        trainable_patterns=None,
         display_epoch=100,
         display_detail_test=0,
         display_grouped_loss=False,
         ckpt_file="model.pth",
+        snapshot_epoch=None,
+        snapshot_prefix=None,
         graph_file=None,
         device="cpu",
     ):
@@ -87,6 +128,9 @@ class Trainer:
             test_objective = objective
         if fix_embedding and model.embedder is not None:
             model.embedder.requires_grad_(False)
+        trainable_parameters = self._configure_trainable_parameters(
+            model, trainable_patterns
+        )
         if decay_rate_iter is not None:
             current_dir = os.getcwd()
             current_iter = current_dir.split("/")[-2].split(".")[-1]
@@ -94,7 +138,7 @@ class Trainer:
                 current_iter = int(current_iter)
                 start_lr = start_lr * (decay_rate_iter ** current_iter)
                 print(f"# resetting start_lr to {start_lr:.2e} because of decay_rate_iter")
-        optimizer = optim.Adam(model.parameters(), lr=start_lr, weight_decay=weight_decay)
+        optimizer = optim.Adam(trainable_parameters, lr=start_lr, weight_decay=weight_decay)
         if stop_lr is not None:
             decay_rate = (stop_lr / start_lr) ** (1 / (n_epoch // decay_steps))
             print(f"# resetting decay_rate: {decay_rate:.4f} to satisfy stop_lr: {stop_lr:.2e}")
@@ -184,6 +228,12 @@ class Trainer:
                 print("")
                 if ckpt_file:
                     model.save(ckpt_file)
+            if snapshot_epoch and epoch % int(snapshot_epoch) == 0:
+                prefix = snapshot_prefix or "model"
+                root, ext = os.path.splitext(prefix)
+                if not ext:
+                    ext = ".pth"
+                model.save(f"{root}_epoch{epoch:04d}{ext}")
 
         if ckpt_file:
             model.save(ckpt_file)

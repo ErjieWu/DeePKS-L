@@ -55,6 +55,7 @@
 | `ml.train.batch_size / ml.train.group_batch` | `int` | `train, iterate` | `optional` | Preferred training batch settings. They map into the dataset loader configuration. |
 | `ml.train.epochs / ml.train.display_epoch / ml.train.display_detail_test` | `int` | `train, iterate` | `optional` | Preferred training-loop controls. |
 | `ml.train.optimizer / ml.train.scheduler` | `dict` | `train, iterate` | `optional` | Optimizer and scheduler settings. The current recipes use optimizer.lr, optimizer.weight_decay, scheduler.decay_steps, scheduler.decay_rate, and scheduler.stop_lr. |
+| `ml.train.trainable_patterns` | `list[str] | str | null` | `train, iterate` | `null` | Optional shell-style model-parameter name patterns for layer-wise continuation, for example densenet.layers.3.* for a final-head-only stage. |
 | `ml.fit_elem` | `bool` | `train, iterate` | `False` | Whether to fit elemental energy constants before training. |
 
 ## Runtime / iterate details
@@ -119,10 +120,64 @@
 | `scf_abacus.cal_stress` | `mixed` | `scf, stats, iterate` | `0` | Whether to compute stress. |
 | `scf_abacus.deepks_bandgap` | `mixed` | `scf, stats, iterate` | `0` | ABACUS DeePKS bandgap flag. |
 | `scf_abacus.deepks_v_delta` | `mixed` | `scf, stats, iterate` | `0` | ABACUS DeePKS v_delta flag. |
+| `scf_abacus.deepks_grad` | `mixed` | `scf, stats, iterate` | `0` | ABACUS DeePKS grad output flag. |
 | `scf_abacus.deepks_out_labels` | `mixed` | `scf, stats, iterate` | `1` | ABACUS DeePKS label dump flag. |
 | `scf_abacus.deepks_scf` | `mixed` | `scf, stats, iterate` | `0` | ABACUS DeePKS SCF switch. |
 | `scf_abacus.out_wfc_lcao` | `mixed` | `scf, stats, iterate` | `0` | ABACUS out_wfc_lcao switch. |
 | `scf_abacus.ntype` | `mixed` | `scf, stats, iterate` | `None` | ABACUS atom-type count. |
+
+## Descriptor-gradient supervision
+
+`physics.backend.input.gradient_label` combines current-run property operators
+as `M=sum_p c_p A_p^T A_p` and `b=sum_p c_p A_p^T Delta X_p`. The coefficients
+are effective coefficients: DeePKS-L performs no hidden unit conversion or
+loss-size normalization.
+
+| Parameter | Type | Default | Description |
+| --- | --- | --- | --- |
+| `force` | `float >= 0` | `0` | Effective force coefficient `c_F`; zero disables force. |
+| `stress` | `float >= 0` | `0` | Effective stress coefficient `c_S`; nonzero stress automatically adds six local cell-strain coordinates. |
+| `hr` | `float >= 0` | `1` | Effective real-space Hamiltonian coefficient `c_H`; zero disables HR. |
+| `ridge` | `float >= 0` | `1e-8` | Tikhonov ridge used only when solving the direct target `g*=(M+ridge I)^-1 b`. It does not alter quadratic `M,b`. |
+| `fallback` | `lstsq or pinv` | `lstsq` | Singular-solve fallback used only for the direct target. |
+| `eigen_filter` | `dict or null` | `null` | Optional direct-target filter. Specify exactly one of `{rcond: value}` or `{min_eig: value}`. It does not alter quadratic `M,b`. |
+
+All ABACUS DeePKS energy, force, stress, Hamiltonian, and projected-Hamiltonian
+labels are required to be in Hartree. Legacy Ry real-space Hamiltonian data
+must be regenerated or converted once before use.
+
+To reproduce direct-property reductions, include them in the coefficients.
+For a two-atom Si frame with direct force weight 1, stress weight 1, HR weight
+0.005, six force/stress components, HR range 9, and `nlocal=26`, use:
+
+```yaml
+gradient_label:
+  force: 0.16666666666666666       # 1/6
+  stress: 0.16666666666666666      # 1/6
+  hr: 2.136752136752137e-5         # 0.005/(9*26)
+```
+
+The `g_label` objective accepts exactly two loss types:
+
+```yaml
+- name: g_label
+  weight: 1.0
+  loss:
+    type: direct       # MSE(g, g*)
+```
+
+or
+
+```yaml
+- name: g_label
+  weight: 1.0
+  loss:
+    type: quadratic    # mean_frame(g^T M g - 2 g^T b)
+```
+
+The quadratic form is inverse-free and is the recommended property-equivalent
+path. Stress-coordinate augmentation is detected from the saved label width;
+there is no separate loss-side switch.
 
 ## Runtime loading contract
 

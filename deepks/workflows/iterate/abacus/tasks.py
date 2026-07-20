@@ -177,7 +177,7 @@ def make_run_scf_abacus(systems_train, systems_test=None,
 def make_stat_scf_abacus(systems_train, systems_test=None, *,
                          train_dump="data_train", test_dump="data_test",
                          cal_force=0, cal_stress=0, deepks_bandgap=0,
-                         deepks_v_delta=0, deepks_scf=0,
+                         deepks_v_delta=0, deepks_scf=0, deepks_grad=0,
                          workdir=".", outlog="log.data", **stat_args):
     systems_train = [os.path.abspath(s) for s in systems_train]
     systems_test = [os.path.abspath(s) for s in systems_test] if systems_test else []
@@ -193,6 +193,7 @@ def make_stat_scf_abacus(systems_train, systems_test=None, *,
         deepks_bandgap=deepks_bandgap,
         deepks_v_delta=deepks_v_delta,
         deepks_scf=deepks_scf,
+        deepks_grad=deepks_grad,
     )
     return PythonTask(
         gather_stats_abacus,

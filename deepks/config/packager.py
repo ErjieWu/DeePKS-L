@@ -18,7 +18,10 @@ PAYLOAD_KEYS = {
 _OBJECTIVE_SHARED_KEYS = {
     "losses",
     "energy_per_atom",
-    "grad_penalty",
+    "force_grad_penalty",
+    "hessian_penalty",
+    "hessian_penalty_method",
+    "hessian_n_probes",
     "vd_divide_by_nlocal",
     "vd_masked_loss",
     "vd_masked_S_threshold",
@@ -395,17 +398,8 @@ def package_config(config):
             resolved_terms = _resolve_hierarchical_terms(ml)
             if resolved_terms:
                 main_train.setdefault("ml", {}).setdefault("objective", {})["terms"] = resolved_terms
-        elif use_profile_scf:
-            main_train["data"]["train"] = [
-                f"../00.scf/level.{i:02d}/data_train/*" for i in range(len(scf_profiles))
-            ]
         if data.get("test") is not None:
-            if use_profile_scf:
-                main_train["data"]["test"] = [
-                    f"../00.scf/level.{i:02d}/data_test/*" for i in range(len(scf_profiles))
-                ]
-            else:
-                main_train["data"]["test"] = "data_test/*"
+            main_train["data"]["test"] = "data_test/*"
         if isinstance(runtime.get("io"), dict):
             main_train["runtime"]["io"] = deepcopy(runtime["io"])
         if child_proj_basis:

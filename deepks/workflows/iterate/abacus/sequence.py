@@ -109,7 +109,7 @@ def make_run_scf_abacus(systems_train, systems_test=None, outlog="out.log", errl
 
 
 def make_stat_scf_abacus(systems_train, systems_test=None, *, train_dump="data_train", test_dump="data_test",
-                         cal_force=0, cal_stress=0, deepks_bandgap=0, deepks_v_delta=0, deepks_scf=0,
+                         cal_force=0, cal_stress=0, deepks_bandgap=0, deepks_v_delta=0, deepks_scf=0, deepks_grad=0,
                          workdir=".", outlog="log.data", **stat_args):
     return _make_stat_scf_abacus(
         systems_train=systems_train,
@@ -121,6 +121,7 @@ def make_stat_scf_abacus(systems_train, systems_test=None, *, train_dump="data_t
         deepks_bandgap=deepks_bandgap,
         deepks_v_delta=deepks_v_delta,
         deepks_scf=deepks_scf,
+        deepks_grad=deepks_grad,
         workdir=workdir,
         outlog=outlog,
         **stat_args,
